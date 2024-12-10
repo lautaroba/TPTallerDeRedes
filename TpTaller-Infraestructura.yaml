@@ -1,0 +1,259 @@
+Parameters:
+  Clave:
+    Type: String
+    Default: TP-Tallerderedes
+    Description: "Clave pem para conectarse a las instancias"
+  AmazonAmiId:
+    Type: String
+    Default: ami-012967cc5a8c9f891
+    Description: "AMI de Amazon"
+  UbuntuAmiId:
+    Type: String
+    Default: ami-005fc0f236362e99f
+    Description: "AMI de Ubuntu 22.04"
+
+Resources:
+  WilliamsRacingVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "10.0.0.0/16"
+      InstanceTenancy: "default"
+      Tags:
+        - Key: Name
+          Value: "WilliamsRacing"
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WilliamsRacingVPC
+      CidrBlock: "10.0.1.0/28"
+      Tags:
+        - Key: Name
+          Value: "PUBLIC"
+
+  BackendSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref WilliamsRacingVPC
+      CidrBlock: "10.0.0.0/24"
+      Tags:
+        - Key: Name
+          Value: "Backend"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: "ig-wr"
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref WilliamsRacingVPC
+      InternetGatewayId: !Ref InternetGateway
+  
+  PermitirTodoSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "PermitirTodo-sg"
+      VpcId: !Ref WilliamsRacingVPC
+      GroupDescription: "Permitir todo el trafico"
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+  
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WilliamsRacingVPC
+      Tags:
+        - Key: Name
+          Value: "PublicRT"
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref WilliamsRacingVPC
+      Tags:
+        - Key: Name
+          Value: "PrivateRT"
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+  
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  BackendSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BackendSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: "t2.micro"
+      KeyName: !Ref Clave
+      NetworkInterfaces:
+        - SubnetId: !Ref PublicSubnet
+          AssociatePublicIpAddress: false
+          DeviceIndex: 0
+          GroupSet:
+          - !Ref PermitirTodoSecurityGroup
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: "Bastion"
+      UserData: !Base64 |
+        #!/bin/bash
+        # Actualizar el sistema
+        sudo su
+        apt-get update -y
+        apt-get upgrade -y
+        apt-get install -y iptables nginx squid wireguard asterisk
+        
+        # Permitir reenvio
+        sysctl -w net.ipv4.ip_forward=1
+        sysctl -p
+        iptables -t nat -A POSTROUTING -j MASQUERADE
+      PrivateDnsNameOptions:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      InstanceId: !Ref BastionInstance
+
+  ElasticIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref BastionInstance 
+      EIP: !Ref ElasticIP  
+
+  WebPublicaInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: "t2.micro"
+      KeyName: !Ref Clave
+      NetworkInterfaces:
+        - SubnetId: !Ref BackendSubnet
+          AssociatePublicIpAddress: false
+          DeviceIndex: 0
+          GroupSet:
+          - !Ref PermitirTodoSecurityGroup
+      Tags:
+        - Key: Name
+          Value: "WebPublica"
+      UserData: !Base64 |
+          #!/bin/bash
+          sudo apt-get update -y
+          sudo apt-get install -y iptables apache2
+          systemctl start apache2
+          systemctl enable apache2
+      PrivateDnsNameOptions:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
+
+  WebPrivado1Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmazonAmiId
+      InstanceType: "t2.micro"
+      KeyName: !Ref Clave
+      NetworkInterfaces:
+        - SubnetId: !Ref BackendSubnet
+          AssociatePublicIpAddress: false
+          DeviceIndex: 0
+          GroupSet:
+          - !Ref PermitirTodoSecurityGroup
+      Tags:
+        - Key: Name
+          Value: "WebPrivado1"
+      UserData: !Base64 |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum install -y iptables httpd
+          systemctl start httpd
+      PrivateDnsNameOptions:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
+
+  WebPrivado2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmazonAmiId
+      InstanceType: "t2.micro"
+      KeyName: !Ref Clave
+      NetworkInterfaces:
+        - SubnetId: !Ref BackendSubnet
+          AssociatePublicIpAddress: false
+          DeviceIndex: 0
+          GroupSet:
+          - !Ref PermitirTodoSecurityGroup
+      Tags:
+        - Key: Name
+          Value: "WebPrivado2"
+      UserData: !Base64 |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum install -y iptables httpd
+          systemctl start httpd
+      PrivateDnsNameOptions:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
+  
+  MySQLdbInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref UbuntuAmiId
+      InstanceType: "t2.micro"
+      KeyName: !Ref Clave
+      NetworkInterfaces:
+        - SubnetId: !Ref BackendSubnet
+          AssociatePublicIpAddress: false
+          DeviceIndex: 0
+          GroupSet:
+          - !Ref PermitirTodoSecurityGroup
+      Tags:
+        - Key: Name
+          Value: "MySQLdb"
+      UserData: !Base64 |
+          #!/bin/bash
+          # Actualizar el sistema
+          sudo apt-get update -y
+          sudo apt-get install -y mysql-server iptables
+          systemctl status mysql
+      PrivateDnsNameOptions:
+        HostnameType: "ip-name"
+        EnableResourceNameDnsARecord: false
+        EnableResourceNameDnsAAAARecord: false
